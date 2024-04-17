@@ -107,33 +107,55 @@ loss_joint_root = nn.MSELoss()
 l_hm, l_so3, l_beta, l_joint_root = 1, 1, 1, 1
 
 lr = 1e-5
-epoches = 1
+epoches = 5
+
 train_step, test_step = 0, 0
+
 optimizer = torch.optim.Adam(model.parameters(), lr)
 
 
 def training(train_data, test_data, epoches):
     for i in range(epoches):
         print("--------------第{}次训练--------------".format(i))
-        img = []
         for data in train_data:
-            img.append(data['image'])
-        print(img.shape)
-        img = torch.tensor(img).unsqueeze(0).to(device)
-        hm, so3, beta, joint_root, bone_vis = model(img, intr)
-        print(joint_root.shape)
+            imgs = data['image'].to(device)
+            intr = get_intr()
+
+            hm_target = torch.tensor(data['target_joints_2d'], requires_grad=True).to(device)
+            so3_target = torch.tensor(data['target_joints_3d'], requires_grad=True).to(device)
+            joint_root_target = torch.tensor(data['target_mano_pose'], requires_grad=True).to(device)
+
+            hm, so3, beta, joint_root, bone_vis = model(imgs, intr)
+            loss = l_hm * loss_hm(hm_target, hm) + l_so3 * loss_so3(so3_target, so3) + \
+                l_joint_root * loss_hm(joint_root_target, joint_root)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            train_step = train_step + 1
+
+        total_loss = 0
+        # test
+        with torch.no_grad():
+            for data in test_data:
+                imgs = data['image'].to(device)
+                intr = get_intr(imgs)
+
+                hm_target = data['target_joint_2d'].to(device)
+                so3_target = data['target_joint_3d'].to(device)
+                joint_root_target = data['target_mano_pose'].to(device)
+
+                hm, so3, beta, joint_root, bone_vis = model(imgs, intr)
+
+                loss = l_hm * loss_hm(hm_target, hm) + l_so3 * loss_so3(so3_target, so3) + \
+                    l_joint_root * loss_hm(joint_root_target, joint_root)
+
+                total_loss += loss
+        print("Total loss: {}".format(total_loss))
 
 
-# training(train_dataset, test_dataset, epoches)
-data = next(iter(train_data))
-
-print(data['image'].shape)
-imgs = data['image'].to(device)
-intr = get_intr(imgs)
-hm, so3, beta, joint_root, bone_vis = model(imgs, intr)
-print(hm.shape, so3.shape, beta.shape, joint_root.shape)
-print(joint_root)
-print(data)
+training(train_dataset, test_dataset, epoches)
 # training(epoches)
 
 
