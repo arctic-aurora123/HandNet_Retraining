@@ -4,6 +4,7 @@ import time
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -163,58 +164,65 @@ def training(train_data, test_data, epoches):
         model.train()
         train_loss = 0
         test_loss = 0
-        for idx, data in enumerate(train_data):
-            imgs = data['image'].to(device)
-            joints_2d = data['joints_2d']
-            hm_target = hm_graph(batch_size, joints_2d).to(device)
-            so3_target = torch.tensor(data['target_mano_pose'], device=device)
-            joint_root_target = torch.tensor(data['target_joints_3d'][:,0:1,:], device=device)
-            intr = torch.tensor(data['target_cam_intr'], device=device)
-
-            optimizer.zero_grad()
-            
-            hm, so3, beta, joint_root, bone_vis = model(imgs, intr)
-            
-            so3 = torch.split(so3, 16, dim=1)
-            so3 = torch.stack(so3, dim=2)
-            
-            print("target_joints_2d shape: {}".format(hm_target.shape))
-            print("target_so3 shape: {}".format(so3_target.shape))
-            print("target_joint_root shape: {}".format(joint_root_target.shape))
-            print("joints_2d shape: {}".format(hm.shape))
-            print("so3 shape: {}".format(so3.shape))   
-            print("joint_root shape: {}".format(joint_root.shape))
-            
-            loss = l_hm * loss_hm(hm_target, hm) + l_so3 * loss_so3(so3_target, so3) + \
-                l_joint_root * loss_hm(joint_root_target, joint_root)
-                
-            train_loss = loss.item()
-            
-            loss.backward()
-            optimizer.step()
-            print("Train loss: {}".format(train_loss))
-
         
-        # test
-        with torch.no_grad():
-            model.eval()
-            for data in test_data:
+        with tqdm(total=len(train_data)) as pbar1:
+            pbar1.set_description('Training: ')
+            
+            for idx, data in enumerate(train_data):
                 imgs = data['image'].to(device)
+                joints_2d = data['joints_2d']
+                hm_target = hm_graph(batch_size, joints_2d).to(device)
+                so3_target = torch.tensor(data['target_mano_pose'], device=device)
+                joint_root_target = torch.tensor(data['target_joints_3d'][:,0:1,:], device=device)
+                intr = torch.tensor(data['target_cam_intr'], device=device)
 
-                hm_target = data['target_joints_2d'].to(device)
-                so3_target = data['target_joints_3d'].to(device)
-                joint_root_target = data['target_mano_pose'].to(device)
-                intr = data['target_cam_intr'].to(device)
+                optimizer.zero_grad()
+                
                 hm, so3, beta, joint_root, bone_vis = model(imgs, intr)
-
+                
+                so3 = torch.split(so3, 16, dim=1)
+                so3 = torch.stack(so3, dim=2)
+                
+                # print("target_joints_2d shape: {}".format(hm_target.shape))
+                # print("target_so3 shape: {}".format(so3_target.shape))
+                # print("target_joint_root shape: {}".format(joint_root_target.shape))
+                # print("joints_2d shape: {}".format(hm.shape))
+                # print("so3 shape: {}".format(so3.shape))   
+                # print("joint_root shape: {}".format(joint_root.shape))
+                
                 loss = l_hm * loss_hm(hm_target, hm) + l_so3 * loss_so3(so3_target, so3) + \
                     l_joint_root * loss_hm(joint_root_target, joint_root)
+                    
+                train_loss = loss.item()
+                
+                loss.backward()
+                optimizer.step()
+                print("Train loss: {}".format(train_loss))
+                pbar1.update(1)
 
-                test_loss += loss
-        print("Test loss: {}".format(test_total_loss))
-        writer.add_scalars('Training vs. Validation Loss',
-                            { 'Training' : train_loss, 'Validation' : test_loss },
-                            epoches)
+        with tqdm(total=len(test_data)) as pbar2:
+            pbar2.set_description('Testing: ')
+            # test
+            with torch.no_grad():
+                model.eval()
+                for data in test_data:
+                    imgs = data['image'].to(device)
+
+                    hm_target = data['target_joints_2d'].to(device)
+                    so3_target = data['target_joints_3d'].to(device)
+                    joint_root_target = data['target_mano_pose'].to(device)
+                    intr = data['target_cam_intr'].to(device)
+                    hm, so3, beta, joint_root, bone_vis = model(imgs, intr)
+
+                    loss = l_hm * loss_hm(hm_target, hm) + l_so3 * loss_so3(so3_target, so3) + \
+                        l_joint_root * loss_hm(joint_root_target, joint_root)
+
+                    test_loss += loss
+            print("Test loss: {}".format(test_total_loss))
+            pbar2.update(1)
+            writer.add_scalars('Training vs. Validation Loss',
+                                { 'Training' : train_loss, 'Validation' : test_loss },
+                                epoches)
 
 
 
