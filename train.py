@@ -1,7 +1,15 @@
 import os
 import time
+# tune multi-threading params
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 import cv2
+cv2.setNumThreads(0)
+
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -21,15 +29,6 @@ from model import HandNet
 
 from torch.utils.tensorboard import SummaryWriter
 
-
-# tune multi-threading params
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
-
-cv2.setNumThreads(0)
 
 datapath = '/mnt/public/datasets'
 img_w = 256
@@ -99,22 +98,24 @@ def hm_graph(batch_size, joints_2d):
     h = 64
     for i in range(batch_size):
         hm_target = list()
+        joints_2d /= 4
         for j in range(joints_2d.shape[1]):
             
-            img = np.zeros((256, 256), dtype=np.uint8)  #(H, W)
-            center = tuple(joints_2d[i, j, :].numpy().astype(np.uint8))
-            cv2.circle(img, center, 4, 255, -1)   # add joints
+            img = np.zeros((w, h), dtype=np.int32)  #(H, W)
+            center = joints_2d[i, j, :].numpy().astype(np.int32).tolist()
+            print(center)
+            for c in center:
+                # print("c: ".format(c))
+                img[c[0]][c[1]] = 1
             heat_map = torch.tensor(img).unsqueeze(0)
             #resize, the interpolation mode is NEAREST, may be others
-            heat_map = functional.resize(heat_map, (h, w), 
-                                         interpolation=transforms.InterpolationMode.NEAREST) 
             
             # to visualize , can be deleted
             # heat_map = heat_map.permute(1,2,0)
             # graph = heat_map.numpy().squeeze(2).copy()
             # print(graph.shape)
             # cv2.imwrite('./joint_image/joint_image{}.jpg'.format(j), graph)
-            
+            print(img)
             hm_target.append(heat_map)
         #heat_map = heat_map.permute(1,2,0) #(H, W, C), to visualize , can be deleted
         
@@ -127,51 +128,39 @@ def hm_graph(batch_size, joints_2d):
         # cv2.imwrite('./joint_image/joint_image{}.jpg'.format(i), img)
     hm_target_batch = torch.stack(hm_target_batch).squeeze(2).squeeze(3).type(torch.float32)
     return hm_target_batch
-            
-            
-def collation_fn_for_dict(batch):
 
-    if not isinstance(batch, list):
-        # Use list to align with the following format
-        # This is the case where only 1 sample is provided.
-        batch = [batch]
+def get_hm_taget_new(pred_hm, joints_2d):
+    # by TTT at 2024.4.22
+    # TODO: We could remove the for-loop by using advanced indexing techniques,
+    #       but we should do it later.
+    b, c, h, w = pred_hm.shape
+    target_hm = torch.zeros_like(pred_hm)
+    # print(target_hm.shape)  # B, 21, 64, 64
+    # print(joints_2d.shape)  # B, 21, 2
+    joints_2d = torch.tensor(joints_2d / 4, dtype=torch.long)
+    for batch_idx in range(b):
+        for channel_idx in range(c):
+            x, y = joints_2d[batch_idx][channel_idx]
+            if 0<= x < w and 0 <= y < h:
+                target_hm[batch_idx][channel_idx][y][x] = 1
+            # else: pass - do not draw on the image
 
-    batch_concat = dict()
-
-    keys_to_collate = [
-        'image',
-        'target_joints_2d',
-        'target_joints_3d',
-        'target_mano_pose',
-        'target_cam_intr',
-    ]
-
-    # for each in batch[0]:  # collate all keys
-    for each in keys_to_collate:
-        if isinstance(batch[0][each], np.ndarray) and not isinstance(batch[0][each][0], str):
-            batch_concat[each] = np.concatenate([batch[i][each] for i in range(len(batch))], axis=0)
-            batch_concat[each] = torch.Tensor(batch_concat[each])
-        else:
-            batch_concat[each] = [batch[i][each] for i in range(len(batch))]
-
-    return batch_concat
+    return target_hm
 
 
 def training(train_data, test_data, epoches):
     
-    for i in range(epoches):
-        print("--------------第{}次训练--------------".format(i))
+    n_iter = 0
+    for n_epochs in range(epoches):
         model.train()
         train_loss = 0
         test_loss = 0
         
         with tqdm(total=len(train_data)) as pbar1:
-            pbar1.set_description('Training: ')
+            pbar1.set_description(f'Epoch {n_epochs} Training: ')
             
             for idx, data in enumerate(train_data):
                 imgs = data['image'].to(device)
-                joints_2d = data['joints_2d']
-                hm_target = hm_graph(batch_size, joints_2d).to(device)
                 so3_target = torch.tensor(data['target_mano_pose'], device=device)
                 joint_root_target = torch.tensor(data['target_joints_3d'][:,0:1,:], device=device)
                 intr = torch.tensor(data['target_cam_intr'], device=device)
@@ -180,6 +169,9 @@ def training(train_data, test_data, epoches):
                 
                 hm, so3, beta, joint_root, bone_vis = model(imgs, intr)
                 
+                # hm_target = hm_graph(batch_size, data['joints_2d']).to(device)
+                hm_target = get_hm_taget_new(hm, data['joints_2d'])
+
                 so3 = torch.split(so3, 16, dim=1)
                 so3 = torch.stack(so3, dim=2)
                 
@@ -190,39 +182,53 @@ def training(train_data, test_data, epoches):
                 # print("so3 shape: {}".format(so3.shape))   
                 # print("joint_root shape: {}".format(joint_root.shape))
                 
-                loss = l_hm * loss_hm(hm_target, hm) + l_so3 * loss_so3(so3_target, so3) + \
-                    l_joint_root * loss_hm(joint_root_target, joint_root)
+                loss_hm_value = loss_hm(hm_target, hm)
+                loss_so3_value = loss_so3(so3_target, so3)
+                loss_joint_root_value = loss_hm(joint_root_target, joint_root)
+                loss = l_hm * loss_hm_value + l_so3 * loss_so3_value + l_joint_root * loss_joint_root_value
                     
-                train_loss = loss.item()
-                
                 loss.backward()
                 optimizer.step()
-                print("Train loss: {}".format(train_loss))
+                # print("Train loss: {}".format(loss))
+                n_iter += 1
+                writer.add_scalar('Loss/hm', loss_hm_value.item(), n_iter)
+                writer.add_scalar('Loss/so3', loss_so3_value.item(), n_iter)
+                writer.add_scalar('Loss/joint_root', loss_joint_root_value.item(), n_iter)
+                writer.add_scalar('Loss/SUM', loss.item(), n_iter)
                 pbar1.update(1)
 
         with tqdm(total=len(test_data)) as pbar2:
-            pbar2.set_description('Testing: ')
+            pbar2.set_description(f'Epoch {n_epochs} Testing: ')
             # test
             with torch.no_grad():
                 model.eval()
                 for data in test_data:
                     imgs = data['image'].to(device)
-
-                    hm_target = data['target_joints_2d'].to(device)
-                    so3_target = data['target_joints_3d'].to(device)
-                    joint_root_target = data['target_mano_pose'].to(device)
-                    intr = data['target_cam_intr'].to(device)
+                    so3_target = torch.tensor(data['target_mano_pose'], device=device)
+                    joint_root_target = torch.tensor(data['target_joints_3d'][:,0:1,:], device=device)
+                    intr = torch.tensor(data['target_cam_intr'], device=device)
                     hm, so3, beta, joint_root, bone_vis = model(imgs, intr)
+                    
+                    hm_target = get_hm_taget_new(hm, data['joints_2d'])
 
-                    loss = l_hm * loss_hm(hm_target, hm) + l_so3 * loss_so3(so3_target, so3) + \
-                        l_joint_root * loss_hm(joint_root_target, joint_root)
+                    so3 = torch.split(so3, 16, dim=1)
+                    so3 = torch.stack(so3, dim=2)
 
-                    test_loss += loss
-            print("Test loss: {}".format(test_total_loss))
-            pbar2.update(1)
-            writer.add_scalars('Training vs. Validation Loss',
+                    loss_hm_value = loss_hm(hm_target, hm)
+                    loss_so3_value = loss_so3(so3_target, so3)
+                    loss_joint_root_value = loss_hm(joint_root_target, joint_root)
+                    test_loss = l_hm * loss_hm_value + l_so3 * loss_so3_value + l_joint_root * loss_joint_root_value
+                    
+                    #print("Test loss: {}".format(test_loss))
+            
+                    writer.add_scalars('Training vs. Validation Loss',
                                 { 'Training' : train_loss, 'Validation' : test_loss },
                                 epoches)
+                    pbar2.update(1)
+
+        # save weights
+        print('saving weights...')
+        torch.save(model, 'weights.pt')
 
 
 
@@ -231,9 +237,9 @@ if __name__ == '__main__':
     cfg_test = CN(DEXYCB_3D_CONFIG_TEST)
     batch_size = 64
     train_dataset = DexYCB(cfg_train)
-    train_data = DataLoader(train_dataset, batch_size, shuffle=True)
+    train_data = DataLoader(train_dataset, batch_size, shuffle=True, num_workers=16)
     test_dataset = DexYCB(cfg_test)
-    test_data = DataLoader(test_dataset, batch_size, shuffle=True)
+    test_data = DataLoader(test_dataset, batch_size, shuffle=False, num_workers=16)
 
 
     print("Train Dataset Len: ", len(train_dataset))
@@ -258,7 +264,7 @@ if __name__ == '__main__':
 
     l_hm, l_so3, l_beta, l_joint_root = 1, 1, 1, 1
 
-    lr = 0.02
+    lr = 1e-3  # 0.02 is way too large
     epoches = 20
    
     optimizer = torch.optim.Adam(model.parameters(), lr)
