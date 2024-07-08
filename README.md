@@ -112,3 +112,7 @@ $ python -c "import torch; import Deformable as DF; print(DF.__file__)"
 ## Checkpoints
 
 You can run `download_models.sh` to download the checkpoints required for the task, including ImageNet pre-trained HRNet.
+
+## Causions!!!
+the output of manolayer and the Handnet is changed 
+please replace the file in the usage
