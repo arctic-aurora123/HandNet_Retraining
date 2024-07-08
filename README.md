@@ -118,4 +118,4 @@ the output of manolayer and the Handnet is changed
 please replace the file in the usage
 
 you can get the trained-model from the link below
-https://drive.google.com/file/d/1raceoaZopz4ghCN-0k9orrJp4Y6enXaf/view?usp=sharing
+[Handnet_Retrained](https://drive.google.com/file/d/1raceoaZopz4ghCN-0k9orrJp4Y6enXaf/view?usp=sharing)
